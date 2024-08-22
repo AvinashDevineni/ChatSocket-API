@@ -16,8 +16,8 @@ function notifyPathedWss(pathedWSS, ...args) {
 app.use(express.json());
 app.use(cors());
 
-app.post('/room/:roomName', (req, res) => {
-    const roomName = req.params.roomName;
+app.post('/room', (req, res) => {
+    const roomName = req.body.roomName;
     const roomPath = `/room/${encodeURI(roomName.toLowerCase())}`;
 
     for (const wss of wsRooms) {
@@ -33,6 +33,18 @@ app.post('/room/:roomName', (req, res) => {
     notifyPathedWss(mainWss, new Blob([JSON.stringify(wssInfo)]));
 
     res.json(wssInfo);
+});
+
+app.get('/room', (req, res) => {
+    if (req.body.path) {
+        const room = getRoomMatchingPath(req.body.path);
+        if (room === null)
+            return res.status(400).json({ 'error': 'Path given doesn\'t not exist.' });
+
+        return res.json(getPathedWssInfo(room));
+    }
+
+    res.json({ rooms: getAllRooms() });
 });
 
 app.get('/room/:roomName', (req, res) => {
@@ -66,18 +78,6 @@ function getRoomMatchingPath(path) {
 
     return null;
 }
-
-app.get('/room', (req, res) => {
-    if (req.body.path) {
-        const room = getRoomMatchingPath(req.body.path);
-        if (room === null)
-            return res.status(400).json({ 'error': 'Path given doesn not exist.' });
-
-        return res.json(getPathedWssInfo(room));
-    }
-
-    res.json({ rooms: getAllRooms() });
-});
 
 const server = app.listen(4000, () => {
     console.log('Go to http://localhost:4000');
