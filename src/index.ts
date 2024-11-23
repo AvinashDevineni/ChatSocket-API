@@ -20,10 +20,10 @@ async function main() {
         };
     }
 
-    function getPathedWssInfo(pathedWSS) {
+    function getPathedWssInfo(pathedWSS: PathedWebSocketServer) {
         return {
             name: pathedWSS.name,
-            path: pathedWSS.path,
+            uri: pathedWSS.uri,
             numPeople: pathedWSS.wss.clients.size
         };
     }
@@ -64,10 +64,10 @@ async function main() {
 
     class PathedWebSocketServer {
         wss: WebSocket.Server;
-        path: string;
+        uri: string;
         name: string;
 
-        constructor(mainWss: PathedWebSocketServer, path: string, name: string,
+        constructor(mainWss: PathedWebSocketServer, uri: string, name: string,
                     serverOptions = new WssOptions(
                         ws => {
                             ws.emit('message', new Blob([JSON.stringify(serverMessage('New Person Joined'))]));
@@ -78,7 +78,7 @@ async function main() {
                             notifyPathedWss(mainWss, new Blob([JSON.stringify(getPathedWssInfo(this))]));
                         }
                     )) {
-            this.path = path;
+            this.uri = uri;
             this.name = name;
             this.wss = createServerlessWSS(serverOptions);
         }
@@ -95,13 +95,11 @@ async function main() {
     console.log('connected to db')
 
     const rooms = await Room.find({});
-    console.log(rooms);
-
-    const mainWss = new PathedWebSocketServer(this, '/', 'Main', new WssOptions(_ => {}, _ => {}));
+    const mainWss = new PathedWebSocketServer(this, '', 'Main', new WssOptions(_ => {}, _ => {}));
     let wsRooms: PathedWebSocketServer[] = [];
     for (const room of rooms) {
         wsRooms.push(new PathedWebSocketServer(
-            mainWss, `/room/${encodeURI(room.name.toLowerCase())}`, room.name
+            mainWss, encodeURI(room.name.toLowerCase()), room.name
         ));
     }
     
@@ -118,10 +116,10 @@ async function main() {
     
     app.post('/room', (req: Request, res: Response) => {
         const roomName = req.body.roomName;
-        const roomPath = `/room/${encodeURI(roomName.toLowerCase())}`;
+        const roomPath = encodeURI(roomName.toLowerCase());
     
         for (const wss of wsRooms) {
-            if (wss.path === roomPath) {
+            if (wss.uri === roomPath) {
                 res.status(400).json({ error: 'Room with same name already exists.' });
                 return;
             }
@@ -140,49 +138,25 @@ async function main() {
     });
     
     app.get('/room', (req, res) => {
-        if (req.body.path) {
-            const room = getRoomMatchingPath(req.body.path);
-            if (room === null)
-                res.status(400).json({ 'error': 'Path given doesn\'t not exist.' });
-            else
-                res.json(getPathedWssInfo(room));
-            return;
-        }
-    
-        res.json({ rooms: getAllRooms() });
+        res.json({ rooms: wsRooms.map(wss => getPathedWssInfo(wss)) });
     });
     
-    app.get('/room/:roomName', (req, res) => {
-        const roomName = req.params.roomName;
+    app.get('/room/:roomUri', (req, res) => {
+        const roomUri = encodeURI(req.params.roomUri);
         
         let roomWss: PathedWebSocketServer | null = null;
         for (const wss of wsRooms) {
-            if (wss.name === roomName) {
+            if (wss.uri === roomUri) {
                 roomWss = wss;
                 break;
             }
         }
     
         if (roomWss === null)
-            res.status(400).json({ error: `Room ${roomName} does not exist.` });
+            res.status(400).json({ error: `Room ${roomUri} does not exist.` });
         else
             res.json(getPathedWssInfo(roomWss));
     });
-    
-    function getAllRooms() {
-        const rooms: any[] = [];
-        wsRooms.forEach(wss => rooms.push(getPathedWssInfo(wss)));
-        return rooms;
-    }
-    
-    function getRoomMatchingPath(path: string) {
-        wsRooms.forEach(wss => {
-            if (wss.path === path)
-                return wss;
-        });
-    
-        return null;
-    }
     
     const server = app.listen(4000, () => {
         console.log('Go to http://localhost:4000');
@@ -195,15 +169,23 @@ async function main() {
             return;
         }
     
-        const reqUrl = url.parse(req.url);
-        
-        if (reqUrl.pathname === mainWss.path) {
+        const reqUrl = new URL(`http://thisdoesntmatter.com${req.url}`);
+        if (reqUrl.pathname === '/') {
             mainWss.wss.handleUpgrade(req, socket, head, ws => mainWss.wss.emit('connection', ws));
             return;
         }
+
+        const splitPathname = reqUrl.pathname.split('/');
+        let roomUri: string;
+        if (splitPathname.length === 1)
+            roomUri = splitPathname[0];
+        else roomUri = splitPathname[splitPathname.length - 1];
+
+        console.log(roomUri);
+        
     
         for (const wss of wsRooms) {
-            if (reqUrl.pathname === wss.path) {
+            if (roomUri === wss.uri) {
                 wss.wss.handleUpgrade(req, socket, head, ws => wss.wss.emit('connection', ws));
                 return;
             }
