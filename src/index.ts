@@ -1,10 +1,11 @@
-import url from 'url';
 import express, { Request, Response } from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import mongoose from 'mongoose';
+import WebSocket, { WebSocketServer, RawData } from 'ws';
+
 import Room from '../models/Room.model.js';
-import WebSocket, { WebSocketServer } from 'ws';
+import Message from '../models/Message.model.js';
 
 const app = express();
 dotenv.config();
@@ -28,18 +29,25 @@ async function main() {
         };
     }
 
-    function createServerlessWSS(wssOptions: WssOptions): WebSocketServer {
+    function createServerlessWSS(wssOptions: WssOptions, isMainWSS = false): WebSocketServer {
         const wss = new WebSocketServer({ noServer: true });
         wss.on('connection', ws => {
             ws.on('error', (e) => console.log(e));
 
             ws.on('close', () => wssOptions.leaveAction(ws));
 
-            ws.on('message', msg => {
+            ws.on('message', (msg: Buffer) => {
+                // only saving msg if not main WSS b/c
+                // main WSS gets messages about server creation
+                if (!isMainWSS)
+                    Message.create({ message: msg.toString() });
+
                 wss.clients.forEach(client => {
                     const isReady = client.readyState === WebSocket.OPEN;
-                    if (wssOptions.shouldSendToSelf ? isReady : (client !== ws && isReady))
-                        client.send(msg);
+                    if (isReady) {
+                        if (wssOptions.shouldSendToBroadcaster || ws !== client)
+                            client.send(msg);
+                    }
                 });
             });
 
@@ -52,13 +60,13 @@ async function main() {
     class WssOptions {
         joinAction: (ws: WebSocket) => void;
         leaveAction: (ws: WebSocket) => void;
-        shouldSendToSelf: boolean;
+        shouldSendToBroadcaster: boolean;
 
         constructor(joinAction: (ws: WebSocket) => void, leaveAction: (ws: WebSocket) => void,
-                    shouldSendToSelf = true) {
+                    shouldSendToBroadcaster = true) {
             this.joinAction = joinAction;
             this.leaveAction = leaveAction;
-            this.shouldSendToSelf = shouldSendToSelf;
+            this.shouldSendToBroadcaster = shouldSendToBroadcaster;
         }
     }
 
@@ -70,17 +78,17 @@ async function main() {
         constructor(mainWss: PathedWebSocketServer, uri: string, name: string,
                     serverOptions = new WssOptions(
                         ws => {
-                            ws.emit('message', new Blob([JSON.stringify(serverMessage('New Person Joined'))]));
-                            notifyPathedWss(mainWss, new Blob([JSON.stringify(getPathedWssInfo(this))]));
+                            ws.emit('message', Buffer.from(JSON.stringify(serverMessage('New Person Joined'))));
+                            notifyPathedWss(mainWss, Buffer.from(JSON.stringify(getPathedWssInfo(this))));
                         },
                         ws => {
-                            ws.emit('message', new Blob([JSON.stringify(serverMessage('Person Left'))]));
-                            notifyPathedWss(mainWss, new Blob([JSON.stringify(getPathedWssInfo(this))]));
+                            ws.emit('message', Buffer.from(JSON.stringify(serverMessage('Person Left'))));
+                            notifyPathedWss(mainWss, Buffer.from(JSON.stringify(getPathedWssInfo(this))));
                         }
-                    )) {
+                    ), isMainWSS = false) {
             this.uri = uri;
             this.name = name;
-            this.wss = createServerlessWSS(serverOptions);
+            this.wss = createServerlessWSS(serverOptions, isMainWSS);
         }
     }
     //#endregion
@@ -95,7 +103,7 @@ async function main() {
     console.log('connected to db')
 
     const rooms = await Room.find({});
-    const mainWss = new PathedWebSocketServer(this, '', 'Main', new WssOptions(_ => {}, _ => {}));
+    const mainWss = new PathedWebSocketServer(this, '', 'Main', new WssOptions(_ => {}, _ => {}), true);
     let wsRooms: PathedWebSocketServer[] = [];
     for (const room of rooms) {
         wsRooms.push(new PathedWebSocketServer(
@@ -103,7 +111,7 @@ async function main() {
         ));
     }
     
-    function notifyPathedWss(pathedWSS: PathedWebSocketServer, ...args) {
+    function notifyPathedWss(pathedWSS: PathedWebSocketServer, ...args: Buffer[]) {
         for (const ws of pathedWSS.wss.clients) {
             ws.emit('message', ...args);
             break;
@@ -120,7 +128,7 @@ async function main() {
     
         for (const wss of wsRooms) {
             if (wss.uri === roomPath) {
-                res.status(400).json({ error: 'Room with same name already exists.' });
+                res.status(400).json({ error: 'A room with the same name already exists.', code: 'ROOM_DUPE' });
                 return;
             }
         }
@@ -132,7 +140,7 @@ async function main() {
     
         const wssInfo = getPathedWssInfo(wss);
         // notify about new room
-        notifyPathedWss(mainWss, new Blob([JSON.stringify(wssInfo)]));
+        notifyPathedWss(mainWss, Buffer.from(JSON.stringify(wssInfo)));
     
         res.json(wssInfo);
     });
@@ -153,14 +161,12 @@ async function main() {
         }
     
         if (roomWss === null)
-            res.status(400).json({ error: `Room ${roomUri} does not exist.` });
+            res.status(404).json({ error: `Room "${roomUri}" does not exist.`});
         else
             res.json(getPathedWssInfo(roomWss));
     });
     
-    const server = app.listen(4000, () => {
-        console.log('Go to http://localhost:4000');
-    });
+    const server = app.listen(4000, () => console.log('Go to http://localhost:4000'));
     //#endregion
     
     server.on('upgrade', (req, socket, head) => {
@@ -179,10 +185,7 @@ async function main() {
         let roomUri: string;
         if (splitPathname.length === 1)
             roomUri = splitPathname[0];
-        else roomUri = splitPathname[splitPathname.length - 1];
-
-        console.log(roomUri);
-        
+        else roomUri = splitPathname[splitPathname.length - 1];        
     
         for (const wss of wsRooms) {
             if (roomUri === wss.uri) {
