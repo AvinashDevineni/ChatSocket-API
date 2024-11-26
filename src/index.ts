@@ -2,9 +2,9 @@ import express, { Request, Response } from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import mongoose from 'mongoose';
-import WebSocket, { WebSocketServer, RawData } from 'ws';
+import WebSocket, { WebSocketServer } from 'ws';
 
-import Room from '../models/Room.model.js';
+import Room, { RoomInterface } from '../models/Room.model.js';
 import Message from '../models/Message.model.js';
 
 const app = express();
@@ -25,11 +25,13 @@ async function main() {
         return {
             name: pathedWSS.name,
             uri: pathedWSS.uri,
+            messages: pathedWSS.messages,
             numPeople: pathedWSS.wss.clients.size
         };
     }
 
-    function createServerlessWSS(wssOptions: WssOptions, isMainWSS = false): WebSocketServer {
+    function createServerlessWSS(wssOptions: WssOptions, pathedWSS: PathedWebSocketServer,
+                                 room: RoomInterface, isMainWSS = false): WebSocketServer {
         const wss = new WebSocketServer({ noServer: true });
         wss.on('connection', ws => {
             ws.on('error', (e) => console.log(e));
@@ -39,8 +41,14 @@ async function main() {
             ws.on('message', (msg: Buffer) => {
                 // only saving msg if not main WSS b/c
                 // main WSS gets messages about server creation
-                if (!isMainWSS)
-                    Message.create({ message: msg.toString() });
+                if (!isMainWSS) {
+                    Message.create({ message: msg.toString() }).then(savedMsg => {
+                        room.messages.push(savedMsg.id);
+                        room.save().then(savedRoom => console.log(savedRoom));
+                    });
+                    
+                    pathedWSS.messages.push(msg.toString());
+                }
 
                 wss.clients.forEach(client => {
                     const isReady = client.readyState === WebSocket.OPEN;
@@ -74,8 +82,10 @@ async function main() {
         wss: WebSocket.Server;
         uri: string;
         name: string;
+        messages: string[];
 
         constructor(mainWss: PathedWebSocketServer, uri: string, name: string,
+                    isMainWSS = false, messages: string[] = [], room: RoomInterface,
                     serverOptions = new WssOptions(
                         ws => {
                             ws.emit('message', Buffer.from(JSON.stringify(serverMessage('New Person Joined'))));
@@ -85,10 +95,11 @@ async function main() {
                             ws.emit('message', Buffer.from(JSON.stringify(serverMessage('Person Left'))));
                             notifyPathedWss(mainWss, Buffer.from(JSON.stringify(getPathedWssInfo(this))));
                         }
-                    ), isMainWSS = false) {
+                    )) {
             this.uri = uri;
             this.name = name;
-            this.wss = createServerlessWSS(serverOptions, isMainWSS);
+            this.wss = createServerlessWSS(serverOptions, this, room, isMainWSS);
+            this.messages = messages;
         }
     }
     //#endregion
@@ -102,12 +113,24 @@ async function main() {
     await mongoose.connect(process.env.MONGO_URL);
     console.log('connected to db')
 
-    const rooms = await Room.find({});
-    const mainWss = new PathedWebSocketServer(this, '', 'Main', new WssOptions(_ => {}, _ => {}), true);
+    // setup (creating websocket servers, initializing them, etc.)
+    const dummyRoom = new Room({name: ''});
+    const mainWss = new PathedWebSocketServer(
+        this, '', 'Main', true, [], dummyRoom,
+        new WssOptions(_ => {}, _ => {})
+    );
     let wsRooms: PathedWebSocketServer[] = [];
+    const rooms = await Room.find({});
     for (const room of rooms) {
+        const messages: string[] = [];
+        for (const msg of room.messages) {
+            const txt = (await Message.findById(msg)).message;
+            messages.push(txt);
+        }
+        
         wsRooms.push(new PathedWebSocketServer(
-            mainWss, encodeURI(room.name.toLowerCase()), room.name
+            mainWss, encodeURI(room.name.toLowerCase()),
+            room.name, false, messages, room
         ));
     }
     
@@ -133,9 +156,10 @@ async function main() {
             }
         }
 
-        Room.create({ name: roomName });
+        const room = new Room({ name: roomName });
+        room.save();
     
-        const wss = new PathedWebSocketServer(mainWss, roomPath, roomName);
+        const wss = new PathedWebSocketServer(mainWss, roomPath, roomName, false, [], room);
         wsRooms.push(wss);
     
         const wssInfo = getPathedWssInfo(wss);
@@ -145,7 +169,7 @@ async function main() {
         res.json(wssInfo);
     });
     
-    app.get('/room', (req, res) => {
+    app.get('/room', (_, res) => {
         res.json({ rooms: wsRooms.map(wss => getPathedWssInfo(wss)) });
     });
     

@@ -1,6 +1,10 @@
 import mongoose from 'mongoose';
 
-const messageSchema = new mongoose.Schema({
+export interface MessageInterface extends mongoose.Document {
+    message: string;
+}
+
+const messageSchema = new mongoose.Schema<MessageInterface>({
     message: {
         type: String,
         required: true
