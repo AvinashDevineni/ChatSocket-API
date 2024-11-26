@@ -26,6 +26,7 @@ async function main() {
             name: pathedWSS.name,
             uri: pathedWSS.uri,
             messages: pathedWSS.messages,
+            creationDate: pathedWSS.createdAtDate,
             numPeople: pathedWSS.wss.clients.size
         };
     }
@@ -44,7 +45,7 @@ async function main() {
                 if (!isMainWSS) {
                     Message.create({ message: msg.toString() }).then(savedMsg => {
                         room.messages.push(savedMsg.id);
-                        room.save().then(savedRoom => console.log(savedRoom));
+                        room.save();
                     });
                     
                     pathedWSS.messages.push(msg.toString());
@@ -83,9 +84,10 @@ async function main() {
         uri: string;
         name: string;
         messages: string[];
+        createdAtDate: Date;
 
-        constructor(mainWss: PathedWebSocketServer, uri: string, name: string,
-                    isMainWSS = false, messages: string[] = [], room: RoomInterface,
+        constructor(mainWss: PathedWebSocketServer, uri: string, room: RoomInterface,
+                    isMainWSS = false, messages: string[] = [],
                     serverOptions = new WssOptions(
                         ws => {
                             ws.emit('message', Buffer.from(JSON.stringify(serverMessage('New Person Joined'))));
@@ -97,9 +99,10 @@ async function main() {
                         }
                     )) {
             this.uri = uri;
-            this.name = name;
+            this.name = room.name;
             this.wss = createServerlessWSS(serverOptions, this, room, isMainWSS);
             this.messages = messages;
+            this.createdAtDate = room.createdAt;
         }
     }
     //#endregion
@@ -116,7 +119,7 @@ async function main() {
     // setup (creating websocket servers, initializing them, etc.)
     const dummyRoom = new Room({name: ''});
     const mainWss = new PathedWebSocketServer(
-        this, '', 'Main', true, [], dummyRoom,
+        this, '', dummyRoom, true, [],
         new WssOptions(_ => {}, _ => {})
     );
     let wsRooms: PathedWebSocketServer[] = [];
@@ -130,7 +133,7 @@ async function main() {
         
         wsRooms.push(new PathedWebSocketServer(
             mainWss, encodeURI(room.name.toLowerCase()),
-            room.name, false, messages, room
+            room, false, messages
         ));
     }
     
@@ -147,19 +150,22 @@ async function main() {
     
     app.post('/room', (req: Request, res: Response) => {
         const roomName = req.body.roomName;
-        const roomPath = encodeURI(roomName.toLowerCase());
+        const roomUri = encodeURI(roomName.toLowerCase());
     
         for (const wss of wsRooms) {
-            if (wss.uri === roomPath) {
+            if (wss.uri === roomUri) {
                 res.status(400).json({ error: 'A room with the same name already exists.', code: 'ROOM_DUPE' });
                 return;
             }
         }
 
-        const room = new Room({ name: roomName });
+        // using new Date() for createdAt b/c PathedWSS uses createdAt.
+        // instead of doing room.save().then, doing this is faster and
+        // will be approximately the same as the createdAt of the database
+        const room = new Room({ name: roomName, createdAt: new Date() });
         room.save();
     
-        const wss = new PathedWebSocketServer(mainWss, roomPath, roomName, false, [], room);
+        const wss = new PathedWebSocketServer(mainWss, roomUri, room);
         wsRooms.push(wss);
     
         const wssInfo = getPathedWssInfo(wss);

@@ -3,6 +3,8 @@ import mongoose from 'mongoose';
 export interface RoomInterface extends mongoose.Document {
     name: string;
     messages: mongoose.Schema.Types.ObjectId[];
+    createdAt: Date;
+    updatedAt: Date;
 }
 
 const roomSchema = new mongoose.Schema<RoomInterface>({
