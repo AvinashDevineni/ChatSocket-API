@@ -1,15 +1,23 @@
 import mongoose from 'mongoose';
 
-const roomSchema = new mongoose.Schema({
+export interface RoomInterface extends mongoose.Document {
+    name: string;
+    messages: mongoose.Schema.Types.ObjectId[];
+    createdAt: Date;
+    updatedAt: Date;
+}
+
+const roomSchema = new mongoose.Schema<RoomInterface>({
     name: {
         type: String,
         required: true
     },
-    messages: {
-        type: [String],
+    messages: [{
+        type: mongoose.Schema.Types.ObjectId,
         required: true,
-        default: []
-    }
+        default: [],
+        ref: 'Message'
+    }],
 }, { timestamps: true });
 
 const Room = mongoose.model("Room", roomSchema);
